@@ -1,0 +1,146 @@
+# DiffEqBiological Tutorial I: Introduction
+In this tutorial we'll provide an introduction to using DiffEqBiological to specify chemical reaction networks, and then to solve ODE, jump, tau-leaping and SDE models for them. Let's start by using the DiffEqBiological `reaction_network` DSL to specify a simply chemical reaction network; the well-known Repressilator. 
+
+We first import the basic packages we'll need, and use PyPlot for making figures:
+
+```julia
+using DifferentialEquations, DiffEqBiological, Plots, Latexify;
+pyplot();
+```
+
+We next construct the reaction network. The basic types of arrows and predefined rate laws one can use are discussed in the DiffEqBiological [documentation](http://docs.juliadiffeq.org/latest/models/biological.html). Here we use a mix of first order, zero order and repressive Hill function rate laws. Note, $\varnothing$ corresponds to the empty state, and is used for zeroth order production and first order degradation reactions:
+
+```julia
+repressilator = @reaction_network begin
+    hillr(P₃,α,K,n), ∅ --> m₁
+    hillr(P₁,α,K,n), ∅ --> m₂
+    hillr(P₂,α,K,n), ∅ --> m₃
+    (δ,γ), m₁ ↔ ∅
+    (δ,γ), m₂ ↔ ∅
+    (δ,γ), m₃ ↔ ∅
+    β, m₁ --> m₁ + P₁
+    β, m₂ --> m₂ + P₂
+    β, m₃ --> m₃ + P₃
+    μ, P₁ --> ∅
+    μ, P₂ --> ∅
+    μ, P₃ --> ∅
+end α K n δ γ β μ;
+```
+
+We can use Latexify to look at the corresponding reactions
+
+```julia; results="hidden";
+latexify(repressilator; env=:chemical)
+```
+```julia; echo=false; skip="notebook";
+x = latexify(repressilator; env=:chemical, starred=true);
+display("text/latex", "$x");
+```
+
+or to look at the corresponding ODEs:
+
+```julia; results="hidden";
+latexify(repressilator)
+```
+```julia; echo=false; skip="notebook";
+x = latexify(repressilator, starred=true);
+display("text/latex", "$x");
+```
+
+To solve the ODEs we need to specify the values of the parameters in the model, the initial condition and the time interval to solve the model on. To do this it helps to know the orderings of the parameters and the species. For the parameters, they are ordered in the same order they appear after the `end` statement in the `@reaction_network` macro. The species are ordered in the order they first appear within the `@reaction_network` macro. We can see these orderings by looking at the `syms_to_ints` and `params_to_ints` fields of the generated `reaction_network`:
+
+```julia
+repressilator.syms_to_ints
+```
+
+```julia
+repressilator.params_to_ints
+```
+
+## Solving the ODEs:
+Knowing these orderings, we can create parameter and initial condition vectors, and setup the `ODEProblem` we want to solve:
+
+```julia
+# parameters
+p = (.5, 40, 2, log(2)/120, 5e-3, 20*log(2)/120, log(2)/60)
+
+# initial condition
+u0 = [0.,0.,0.,20.,0.,0.]
+
+# time to solve over
+tspan = (0., 10000.)
+
+# create the ODEProblem we want to solve
+oprob = ODEProblem(repressilator, u0, tspan, p)
+```
+
+At this point we are all setup to solve the ODEs. We can now use any ODE solver from within the DiffEq package. We'll just use the default DifferentialEquations solver for now, and then plot the solutions:
+
+```julia
+sol = solve(oprob, saveat=10.)
+plot(sol, fmt=:svg)
+```
+
+So we see the well-known oscillatory behavior of the repressilator!
+
+---
+
+## Stochastic Simulation Algorithms (SSAs) for Stochastic Chemical Kinetics
+Let's now look at a stochastic version of the repressilator, modeling it with jump processes. Here we will construct a `JumpProblem` that uses Gillespie's Direct method, and then solve it to generate one realization of the jump process. In constructing the `JumpProblem` we could have used any of the SSAs that are part of DiffEqJump instead of the `Direct` method:
+
+```julia
+# first we redefine the initial condition to be integer valued
+u0 = [0,0,0,20,0,0]
+
+# first we create a discrete problem to encode that our species are integer valued:
+dprob = DiscreteProblem(repressilator, u0, tspan, p)
+
+# now we create a JumpProblem, and specify Gillespie's Direct Method as the solver:
+jprob = JumpProblem(dprob, Direct(), repressilator, save_positions=(false,false))
+
+# now let's solve and plot the jump process:
+sol = solve(jprob, SSAStepper(), saveat=10.)
+plot(sol, fmt=:svg)
+```
+
+Here we see that oscillations remain, but become much noiser.
+
+---
+## $\tau$-leaping Methods:
+While SSAs generate exact realizations for stochastic chemical kinetics jump process models, [$\tau$-leaping](https://en.wikipedia.org/wiki/Tau-leaping) methods offer a performant alternative by discretizing in time the underlying time-change representation of the stochastic process. The DiffEqJump package has limited support for $\tau$-leaping methods in the form of the basic Euler's method type approximation proposed by Gillespie. We can use it to simulate the repressilator by constructing a `JumpProblem` from the `reaction_network.regular_jumps` field:
+
+```julia
+lprob = JumpProblem(dprob, Direct(), repressilator.regular_jumps)
+lsol = solve(lprob, SimpleTauLeaping(), dt=.1)
+plot(lsol, plotdensity=1000, fmt=:svg)
+```
+
+---
+## Chemical Langevin Equation (CLE) Stochastic Differential Equation (SDE) Models:
+At an intermediary physical scale between macroscopic ODE models and microscopic stochastic chemical kinetic models lies the CLE, a SDE version of the model. The SDEs add to each ODE above a noise term. As the repressilator has species that get very close to zero in size, it is not a good candidate to model with the CLE (where solutions can then go negative and become unphysical). Let's create a simpler reaction network for a birth-death process that will stay non-negative:
+
+```julia
+bdp = @reaction_network begin
+  c₁, X --> 2X
+  c₂, X --> 0
+  c₃, 0 --> X
+end c₁ c₂ c₃
+p = (1.0,2.0,50.)
+u₀ = [5.]
+tspan = (0.,4.);
+```
+
+The corresponding Chemical Langevin Equation SDE is then
+```math
+dX_t = \left(c₁ X - c₂ X + c₃ \right) dt + \left( \sqrt{c₁ X} - \sqrt{c₂ X} + \sqrt{c₃} \right)dW_t,
+```
+where $W_t$ denotes a standard Brownian Motion. We can solve the CLE SDE model by creating an SDEProblem and solving it similar to what we did for ODEs above:
+
+```julia
+# SDEProblem for CLE
+sprob = SDEProblem(bdp, u₀, tspan, p)
+
+# solve and plot
+sol = solve(sprob, saveat=.004)
+plot(sol, fmt=:svg)
+```

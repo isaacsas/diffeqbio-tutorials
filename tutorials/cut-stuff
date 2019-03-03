@@ -1,0 +1,66 @@
+---
+
+## Stochastic Simulation Algorithms (SSAs) for Stochastic Chemical Kinetics
+Let's now look at a stochastic version of the repressilator, modeling it with jump processes. Here we will construct a `JumpProblem` that uses Gillespie's Direct method, and then solve it to generate one realization of the jump process. In constructing the `JumpProblem` we could have used any of the SSAs that are part of DiffEqJump instead of the `Direct` method:
+
+```julia
+# first we redefine the initial condition to be integer valued
+u0 = [0,0,0,20,0,0]
+
+# first we create a discrete problem to encode that our species are integer valued:
+dprob = DiscreteProblem(repressilator, u0, tspan, p)
+
+# now we create a JumpProblem, and specify Gillespie's Direct Method as the solver:
+jprob = JumpProblem(dprob, Direct(), repressilator, save_positions=(false,false))
+
+# now let's solve and plot the jump process:
+sol = solve(jprob, SSAStepper(), saveat=10.)
+plot(sol, fmt=:svg)
+```
+
+Here we see that oscillations remain, but become much noiser.
+
+---
+## $\tau$-leaping Methods:
+While SSAs generate exact realizations for stochastic chemical kinetics jump process models, [$\tau$-leaping](https://en.wikipedia.org/wiki/Tau-leaping) methods offer a performant alternative by discretizing in time the underlying time-change representation of the stochastic process. The DiffEqJump package has limited support for $\tau$-leaping methods in the form of the basic Euler's method type approximation proposed by Gillespie. We can use it to simulate the repressilator by constructing a `JumpProblem` from the `reaction_network.regular_jumps` field:
+
+```julia
+lprob = JumpProblem(dprob, Direct(), repressilator.regular_jumps)
+lsol = solve(lprob, SimpleTauLeaping(), dt=.1)
+plot(lsol, plotdensity=1000, fmt=:svg)
+```
+
+---
+## Chemical Langevin Equation (CLE) Stochastic Differential Equation (SDE) Models:
+At an intermediary physical scale between macroscopic ODE models and microscopic stochastic chemical kinetic models lies the CLE, a SDE version of the model. The SDEs add to each ODE above a noise term. As the repressilator has species that get very close to zero in size, it is not a good candidate to model with the CLE (where solutions can then go negative and become unphysical). Let's create a simpler reaction network for a birth-death process that will stay non-negative:
+
+```julia
+bdp = @reaction_network begin
+  c₁, X --> 2X
+  c₂, X --> 0
+  c₃, 0 --> X
+end c₁ c₂ c₃
+p = (1.0,2.0,50.)
+tspan = (0.,4.)
+u₀ = [5.]
+```
+
+The corresponding Chemical Langevin Equation SDE is then
+```math
+dX_t = \left(c₁ X - c₂ X + c₃ \right) dt + \left( \sqrt{c₁ X} - \sqrt{c₂ X} + \sqrt{c₃} \right)dW_t,
+```
+where $W_t$ denotes a standard Brownian Motion. We can solve the CLE SDE model by creating an SDEProblem and solving it similar to what we did for ODEs above:
+
+```julia
+# SDEProblem for CLE
+sprob = SDEProblem(bdp, u₀, tspan, p)
+
+# solve and plot
+sol = solve(sprob, saveat=.004)
+plot(sol, fmt=:svg)
+```
+
+```julia{echo=false,skip="notebook"}
+using DiffEqTutorials
+DiffEqTutorials.tutorial_footer(WEAVE_ARGS[:folder],WEAVE_ARGS[:file])
+```
